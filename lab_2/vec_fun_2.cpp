@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -5,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -13,7 +15,7 @@
 #include <mpi.h>
 #define MATRIX_SIZE 2
 
-int N = 8;
+int N = 10000;
 int rank, size;
 void print_vector(std::vector<double> &x);
 std::vector<double> mult_matrix_vec(const std::vector<double> &local_A,
@@ -25,7 +27,7 @@ std::vector<double> mult_matrix_vec(const std::vector<double> &local_A,
   MPI_Status status;
 
   for (int step = 0; step < size; step++) {
-    int receiver = ((unsigned int)(rank - 1)) % size;
+    int receiver = (unsigned int)(rank - 1) % size;
     int sender = (rank + 1) % size;
     // if (rank == 2)
     //  std::cout << "local a " << local_A[0] << "step " << step << std::endl;
@@ -216,9 +218,9 @@ std::vector<double> generateRandomVector(size_t N, double min = 0.0,
 
 void print_vector(std::vector<double> &x) {
   for (int i = 0; i < x.size(); i++) {
-    std::cout << x[i] << " ";
+    std::cout << std::setprecision(14) << x[i] << " ";
     if (i == x.size() - 1) {
-      std::cout << std::endl;
+      std::cout << std::setprecision(10) << std::endl;
     }
   }
 }
@@ -240,29 +242,33 @@ std::vector<double> read_vector_from_file(const std::string &filename) {
   in_file.close();
   return vec;
 }
-
-int main(int argc, char **argv) {
-  MPI_Init(&argc, &argv);
-
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Узнаем номер процесса
-  MPI_Comm_size(MPI_COMM_WORLD, &size); // Узнаем количество процессов
-  int rows_per_proc = N / size;         // Число строк для каждого процесса
-  std::vector<double> local_A(rows_per_proc * N);
-  std::vector<double> A(N * N, 1.0);
+void init_A(std::vector<double> &local_A, int rows_per_proc, int N) {
+  std::vector<double> A;
   if (rank == 0) {
-
+    for (int i = 0; i < N * N; i++) {
+      A.push_back(1.0);
+    }
     for (int i = 0; i < N; i++) {
       A[i * N + i] = 2.0;
     }
   }
   MPI_Scatter(A.data(), rows_per_proc * N, MPI_DOUBLE, local_A.data(),
               rows_per_proc * N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  // print_vector(local_A);
+}
+int main(int argc, char **argv) {
+  MPI_Init(&argc, &argv);
 
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Узнаем номер процесса
+  MPI_Comm_size(MPI_COMM_WORLD, &size); // Узнаем количество процессов
+  auto start = std::chrono::high_resolution_clock::now();
+  int rows_per_proc = N / size; // Число строк для каждого процесса
+  std::vector<double> local_A(rows_per_proc * N);
+  init_A(local_A, rows_per_proc, N);
+  // print_vector(local_A);
   std::vector<double> u(N);
   std::vector<double> b;
   if (rank == 0) {
-    u = read_vector_from_file("vector.txt");
+    u = read_vector_from_file("vector16.txt");
   }
   // MPI_Bcast(u.data(), N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
   std::vector<double> local_u(rows_per_proc);
@@ -274,6 +280,7 @@ int main(int argc, char **argv) {
   // print_vector(local_A);
 
   b = mult_matrix_vec(local_A, local_u, rank, size);
+  // print_vector(b);
 
   // print_vector(b);
   std::vector<double> local_b(rows_per_proc);
@@ -282,17 +289,24 @@ int main(int argc, char **argv) {
 
   std::vector<double> x(N, 0.0);
   std::vector<double> local_x(rows_per_proc);
+
   MPI_Scatter(x.data(), rows_per_proc, MPI_DOUBLE, local_x.data(),
               rows_per_proc, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
   // Рассылаем вектор x каждому процессу
   // std::vector<double> local_x(N);
   // MPI_Bcast(local_x.data(), N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-  double e = pow(0.1, 12);
+  double e = 1 * pow(0.1, 9);
   std::vector<double> x_n = local_x;
-  auto start = std::chrono::high_resolution_clock::now();
   double e_n = e_calculate(local_A, local_x, local_b, rows_per_proc);
+  /*std::vector<double> y_n =
+      y_n_calculate(local_A, local_x, local_b, rows_per_proc);
+  double t = t_calculate(local_A, y_n, rows_per_proc);
+
+  x_n = x_n_calculate(local_x, t, y_n, rows_per_proc);
+  // print_vector(x_n);
+  e_n = e_calculate(local_A, x_n, local_b, rows_per_proc);
+  std::cout << std::setprecision(14) << t << std::endl;*/
   int count = 0;
   // if (rank == 0) {
   //  std::cout << "e_n" << e_n << std::endl;
@@ -312,10 +326,11 @@ int main(int argc, char **argv) {
     // std::cout << "x_n " << rank << " ";
     //  print_vector(x_n);
     e_n = e_calculate(local_A, x_n, local_b, rows_per_proc);
-    if (rank == 0)
-      std::cout << "e_n " << e_n << std::endl;
+    // if (rank == 0)
+    //  std::cout << "e_n " << e_n << std::endl;
     //  if (i > 4) {
     //   break;
+    count++;
     // }
   }
 
@@ -324,9 +339,19 @@ int main(int argc, char **argv) {
   std::chrono::duration<double> elapsed = end - start;
   std::cout << "Время выполнения: " << elapsed.count() << "секунд" << std::endl;
   MPI_Barrier(MPI_COMM_WORLD);
+  // if (rank == 0) {
+  //  print_vector(u);
+  //}
+  // print_vector(x_n);
   if (rank == 0) {
-    print_vector(u);
+
+    std::cout << std::setprecision(13) << u[0] << " " << std::setprecision(13)
+              << x_n[0] << std::endl;
   }
-  print_vector(x_n);
+  if (rank == 0) {
+
+    std::cout << count << std::endl;
+  }
+
   MPI_Finalize();
 }

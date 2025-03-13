@@ -176,27 +176,35 @@ std::vector<double> read_vector_from_file(const std::string &filename) {
   in_file.close();
   return vec;
 }
-int main(int argc, char **argv) {
-  MPI_Init(&argc, &argv);
 
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Узнаем номер процесса
-  MPI_Comm_size(MPI_COMM_WORLD, &size); // Узнаем количество процессов
-  int N = 8000;                         // 40000
-  int rows_per_proc = N / size;         // Число строк для каждого процесса
-  std::vector<double> local_A(rows_per_proc * N);
-  std::vector<double> A(N * N, 1.0);
+void init_A(std::vector<double> &local_A, int rows_per_proc, int N) {
+  std::vector<double> A;
   if (rank == 0) {
-
-    for (size_t i = 0; i < N; i++) {
+    for (int i = 0; i < N * N; i++) {
+      A.push_back(1.0);
+    }
+    for (int i = 0; i < N; i++) {
       A[i * N + i] = 2.0;
     }
   }
   MPI_Scatter(A.data(), rows_per_proc * N, MPI_DOUBLE, local_A.data(),
               rows_per_proc * N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+}
+
+int main(int argc, char **argv) {
+  MPI_Init(&argc, &argv);
+
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Узнаем номер процесса
+  MPI_Comm_size(MPI_COMM_WORLD, &size); // Узнаем количество процессов
+  int N = 10000;                        // 40000
+  int rows_per_proc = N / size;         // Число строк для каждого процесса
+  auto start = std::chrono::high_resolution_clock::now();
+  std::vector<double> local_A(rows_per_proc * N);
+  init_A(local_A, rows_per_proc, N);
   std::vector<double> u(N);
   std::vector<double> b;
   if (rank == 0) {
-    u = read_vector_from_file("vector.txt");
+    u = read_vector_from_file("vector16.txt");
   }
   MPI_Bcast(u.data(), N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -205,9 +213,8 @@ int main(int argc, char **argv) {
   // print_vector(b);
   std::vector<double> x(N, 0.0);
 
-  double e = pow(0.1, 12);
+  double e = pow(0.1, 9);
   std::vector<double> x_n = x;
-  auto start = std::chrono::high_resolution_clock::now();
   double e_n = e_calculate(local_A, x, b);
   // if (rank == 0)
   //  std::cout << e_n << std::endl;
@@ -229,8 +236,8 @@ int main(int argc, char **argv) {
     //  print_vector(x_n);
     //}
     e_n = e_calculate(local_A, x_n, b);
-    if (rank == 0)
-      std::cout << "e_n" << e_n << std::endl;
+    // if (rank == 0)
+    //  std::cout << "e_n" << e_n << std::endl;
     i++;
   }
 
@@ -241,6 +248,8 @@ int main(int argc, char **argv) {
   if (rank == 0) {
     std::cout << "Время выполнения: " << elapsed.count() << "секунд"
               << std::endl;
+    std::cout << std::setprecision(13) << u[0] << " " << std::setprecision(13)
+              << x_n[0] << std::endl;
   }
   MPI_Barrier(MPI_COMM_WORLD);
   /*if (rank == 0) {
