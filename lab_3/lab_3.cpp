@@ -173,6 +173,24 @@ void gather_matrix(int A_block_size, int B_block_size, double *C_subm,
               MPI_COMM_WORLD);
 }
 
+void mpi_type_create(int A_block_size, int B_block_size) {
+  if (rank == 0) {
+    MPI_Type_vector(n2, B_block_size, n3, MPI_DOUBLE, &col);
+    MPI_Type_commit(&col);
+    MPI_Type_create_resized(col, 0, B_block_size * sizeof(double), &coltype);
+    MPI_Type_commit(&coltype);
+
+    MPI_Type_vector(A_block_size, n2, n2, MPI_DOUBLE, &A_rows);
+    MPI_Type_commit(&A_rows);
+  }
+
+  MPI_Type_vector(A_block_size, B_block_size, n3, MPI_DOUBLE, &block);
+  MPI_Type_commit(&block);
+
+  MPI_Type_create_resized(block, 0, B_block_size * sizeof(double), &blocktype);
+  MPI_Type_commit(&blocktype);
+}
+
 int main(int argc, char *argv[]) {
 
   double *A = NULL;
@@ -193,6 +211,8 @@ int main(int argc, char *argv[]) {
   int A_block_size = n1 / p1;
   int B_block_size = n3 / p2;
 
+  mpi_type_create(A_block_size, B_block_size);
+
   initialize_process(A, B, C, A_subm, B_subm, C_subm, A_block_size,
                      B_block_size);
   double *C_1 = NULL;
@@ -202,23 +222,6 @@ int main(int argc, char *argv[]) {
     matrix_mul(A, B, C_1, n1, n2, n3);
   }
 
-  /*if (rank == 0) {
-  printf("Initial matrix A \n");
-  print_matrix(A, n1, n2);
-  printf("Initial matrix B \n");
-  print_matrix(B, n2, n3);
-}*/
-
-  if (rank == 0) {
-    MPI_Type_vector(n2, B_block_size, n3, MPI_DOUBLE, &col);
-    MPI_Type_commit(&col);
-    MPI_Type_create_resized(col, 0, B_block_size * sizeof(double), &coltype);
-    MPI_Type_commit(&coltype);
-
-    MPI_Type_vector(A_block_size, n2, n2, MPI_DOUBLE, &A_rows);
-    MPI_Type_commit(&A_rows);
-  }
-
   create_grid();
   distrib(A, B, A_subm, B_subm, A_block_size, B_block_size);
 
@@ -226,11 +229,6 @@ int main(int argc, char *argv[]) {
   matrix_mul(A_subm, B_subm, C_subm, A_block_size, n2, B_block_size);
 
   auto end = std::chrono::high_resolution_clock::now();
-  MPI_Type_vector(A_block_size, B_block_size, n3, MPI_DOUBLE, &block);
-  MPI_Type_commit(&block);
-
-  MPI_Type_create_resized(block, 0, B_block_size * sizeof(double), &blocktype);
-  MPI_Type_commit(&blocktype);
 
   gather_matrix(A_block_size, B_block_size, C_subm, C);
 
@@ -238,13 +236,13 @@ int main(int argc, char *argv[]) {
 
   if (rank == 0) {
     // printf("matrix C \n");
-
+    //
     // print_matrix(C, n1, n3);
-
+    //
     // printf("matrix A \n");
-    //  print_matrix(A, n1, n2);
+    // print_matrix(A, n1, n2);
     // printf("matrix B \n");
-    //  print_matrix(B, n2, n3);
+    // print_matrix(B, n2, n3);
     // is_matrix_eq(C, C_1, n2, n3);
     std::cout << elapsed.count() << std::endl;
   }
