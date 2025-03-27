@@ -2,29 +2,53 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mpi.h>
+#include <ostream>
+#include <random>
 
 MPI_Comm GridComm;
 MPI_Comm ColComm;
 MPI_Comm RowComm;
 MPI_Datatype col, coltype;
+MPI_Datatype A_rows;
+MPI_Datatype block, blocktype;
 int GridCoords[2];
 int size = 0;
 int rank = 0;
-int p1 = 2;
-int p2 = 2;
-int n1 = 10;
-int n2 = 10;
-int n3 = 10;
+int p1;
+int p2;
+int n1 = 16 * 180;
+int n2 = 16 * 180;
+int n3 = 16 * 180;
 
-double rand_double() { return (double)rand() / RAND_MAX * 50.0 - 2.0; }
-
-void matrix_mul(double *A, double *B, double *C, int n1, int n2, int n3) {
+void is_matrix_eq(double *A, double *B, int n1, int n2) {
+  for (int i = 0; i < n1 * n2; i++) {
+    if (A[i] != B[i]) {
+      printf("not eq");
+      return;
+    }
+  }
+  printf("eq");
+}
+/*void matrix_mul(double *A, double *B, double *C, int n1, int n2, int n3) {
   for (int i = 0; i < n1; i++) {
     for (int j = 0; j < n3; j++)
       for (int k = 0; k < n2; k++)
         C[i * n3 + j] += A[i * n2 + k] * B[k * n3 + j];
+  }
+}*/
+void matrix_mul(const double *A, const double *B, double *C, int M, int K,
+                int N) {
+  for (int i = 0; i < M; ++i) {
+    double *c = C + i * N;
+    for (int k = 0; k < K; ++k) {
+      const double *b = B + k * N;
+      double a = A[i * K + k];
+      for (int j = 0; j < N; ++j)
+        c[j] += a * b[j];
+    }
   }
 }
 
@@ -37,9 +61,13 @@ void set_to_zero(double *A, int row_count, int col_count) {
 }
 
 void data_initialization(double *A, int row_count, int col_count) {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<double> dist(-100, 100);
+
   for (int i = 0; i < row_count; i++) {
     for (int j = 0; j < col_count; j++) {
-      A[i * col_count + j] = rand_double();
+      A[i * col_count + j] = dist(gen);
     }
   }
 }
@@ -53,11 +81,11 @@ void print_matrix(double *A, int row_count, int col_count) {
 }
 
 void initialize_process(double *&A, double *&B, double *&C, double *&A_subm,
-                        double *&B_subm, double *&C_subm, int ABlockSize,
-                        int BBlockSize) {
-  A_subm = new double[n2 * ABlockSize];
-  B_subm = new double[n2 * BBlockSize];
-  C_subm = new double[ABlockSize * BBlockSize];
+                        double *&B_subm, double *&C_subm, int A_block_size,
+                        int B_block_size) {
+  A_subm = new double[n2 * A_block_size];
+  B_subm = new double[n2 * B_block_size];
+  C_subm = new double[A_block_size * B_block_size];
   if (rank == 0) {
     A = new double[n1 * n2];
     B = new double[n2 * n3];
@@ -66,7 +94,7 @@ void initialize_process(double *&A, double *&B, double *&C, double *&A_subm,
     data_initialization(B, n2, n3);
     set_to_zero(C, n1, n3);
   }
-  set_to_zero(C_subm, ABlockSize, BBlockSize);
+  set_to_zero(C_subm, A_block_size, B_block_size);
 }
 
 void create_grid() {
@@ -101,25 +129,52 @@ void print_vector(int *pVector, int Size, int ProcNum) {
 }
 
 void distrib(double *A, double *B, double *A_subm, double *B_subm,
-             int ABlockSize, int BBlockSize) {
+             int A_block_size, int B_block_size) {
   if (GridCoords[1] == 0) {
-    MPI_Scatter(A, ABlockSize * n2, MPI_DOUBLE, A_subm, ABlockSize * n2,
-                MPI_DOUBLE, 0, ColComm);
+    MPI_Scatter(A, 1, A_rows, A_subm, A_block_size * n2, MPI_DOUBLE, 0,
+                ColComm);
   }
 
-  MPI_Bcast(A_subm, ABlockSize * n2, MPI_DOUBLE, 0, RowComm);
+  MPI_Bcast(A_subm, A_block_size * n2, MPI_DOUBLE, 0, RowComm);
 
   if (GridCoords[0] == 0) {
-    MPI_Scatter(B, 1, coltype, B_subm, n2 * BBlockSize, MPI_DOUBLE, 0, RowComm);
+    MPI_Scatter(B, 1, coltype, B_subm, B_block_size * n2, MPI_DOUBLE, 0,
+                RowComm);
   }
-  MPI_Bcast(B_subm, BBlockSize * n2, MPI_DOUBLE, 0, ColComm);
+  MPI_Bcast(B_subm, B_block_size * n2, MPI_DOUBLE, 0, ColComm);
+}
+
+void gather_matrix(int A_block_size, int B_block_size, double *C_subm,
+                   double *C) {
+  int *displ = new int[p1 * p2];
+  int *recvcount = new int[p1 * p2];
+  int block_count = 0;
+  int block_size =
+      A_block_size * B_block_size; // размер подматрицы каждого процесса
+  int num_count = 0;
+  int written;
+  int j = 0;
+  while (num_count < p1 * p2) {
+    written = 0;
+    for (int i = 0; i < p2; i += 1) {
+      displ[j] = block_count;
+      recvcount[j] = 1;
+
+      j++;
+      block_count++;
+
+      written++;
+    }
+    num_count += written;
+    block_count += written * (A_block_size - 1);
+  }
+
+  MPI_Gatherv(C_subm, block_size, MPI_DOUBLE, C, recvcount, displ, blocktype, 0,
+              MPI_COMM_WORLD);
 }
 
 int main(int argc, char *argv[]) {
-  int ABlockSize = n1 / p1;
-  int BBlockSize = n3 / p2;
 
-  auto start = std::chrono::high_resolution_clock::now();
   double *A = NULL;
   double *B = NULL;
   double *C = NULL;
@@ -132,64 +187,66 @@ int main(int argc, char *argv[]) {
   MPI_Comm_size(MPI_COMM_WORLD, &size);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-  create_grid();
+  p1 = std::atoi(argv[1]);
+  p2 = std::atoi(argv[2]);
 
-  initialize_process(A, B, C, A_subm, B_subm, C_subm, ABlockSize, BBlockSize);
+  int A_block_size = n1 / p1;
+  int B_block_size = n3 / p2;
+
+  initialize_process(A, B, C, A_subm, B_subm, C_subm, A_block_size,
+                     B_block_size);
+  double *C_1 = NULL;
+  if (rank == 0) {
+    C_1 = new double[n1 * n3];
+    set_to_zero(C_1, n1, n3);
+    matrix_mul(A, B, C_1, n1, n2, n3);
+  }
 
   /*if (rank == 0) {
-    printf("Initial matrix A \n");
-    print_matrix(A, n1, n2);
-    printf("Initial matrix B \n");
-    print_matrix(B, n2, n3);
-  }*/
+  printf("Initial matrix A \n");
+  print_matrix(A, n1, n2);
+  printf("Initial matrix B \n");
+  print_matrix(B, n2, n3);
+}*/
+
   if (rank == 0) {
-    MPI_Type_vector(n2, BBlockSize, n3, MPI_DOUBLE, &col);
+    MPI_Type_vector(n2, B_block_size, n3, MPI_DOUBLE, &col);
     MPI_Type_commit(&col);
-    MPI_Type_create_resized(col, 0, BBlockSize * sizeof(double), &coltype);
+    MPI_Type_create_resized(col, 0, B_block_size * sizeof(double), &coltype);
     MPI_Type_commit(&coltype);
-  }
-  distrib(A, B, A_subm, B_subm, ABlockSize, BBlockSize);
-  matrix_mul(A_subm, B_subm, C_subm, ABlockSize, n2, BBlockSize);
 
-  MPI_Datatype block, blocktype;
-  MPI_Type_vector(ABlockSize, BBlockSize, n3, MPI_DOUBLE, &block);
-  MPI_Type_commit(&block);
-
-  MPI_Type_create_resized(block, 0, BBlockSize * sizeof(double), &blocktype);
-  MPI_Type_commit(&blocktype);
-
-  int *displ = new int[p1 * p2];
-  int *recvcount = new int[p1 * p2];
-  int BlockCount = 0;
-  int BlockSize = ABlockSize * BBlockSize;
-  int NumCount = 0;
-  int Written;
-  int j = 0;
-  while (NumCount < p1 * p2 * BlockSize) {
-    Written = 0;
-    for (int i = 0; i < n3; i += BBlockSize) {
-      displ[j] = BlockCount;
-      recvcount[j] = 1;
-      j++;
-      BlockCount++;
-
-      Written++;
-    }
-    NumCount += Written * BlockSize;
-    BlockCount += Written * (ABlockSize - 1);
+    MPI_Type_vector(A_block_size, n2, n2, MPI_DOUBLE, &A_rows);
+    MPI_Type_commit(&A_rows);
   }
 
-  MPI_Gatherv(C_subm, BlockSize, MPI_DOUBLE, C, recvcount, displ, blocktype, 0,
-              MPI_COMM_WORLD);
+  create_grid();
+  distrib(A, B, A_subm, B_subm, A_block_size, B_block_size);
+
+  auto start = std::chrono::high_resolution_clock::now();
+  matrix_mul(A_subm, B_subm, C_subm, A_block_size, n2, B_block_size);
 
   auto end = std::chrono::high_resolution_clock::now();
+  MPI_Type_vector(A_block_size, B_block_size, n3, MPI_DOUBLE, &block);
+  MPI_Type_commit(&block);
+
+  MPI_Type_create_resized(block, 0, B_block_size * sizeof(double), &blocktype);
+  MPI_Type_commit(&blocktype);
+
+  gather_matrix(A_block_size, B_block_size, C_subm, C);
 
   std::chrono::duration<double> elapsed = end - start;
-  if (rank == 0) {
-    printf("matrix C \n");
 
-    print_matrix(C, n1, n3);
-    std::cout << elapsed.count() << "Секунд" << std::endl;
+  if (rank == 0) {
+    // printf("matrix C \n");
+
+    // print_matrix(C, n1, n3);
+
+    // printf("matrix A \n");
+    //  print_matrix(A, n1, n2);
+    // printf("matrix B \n");
+    //  print_matrix(B, n2, n3);
+    // is_matrix_eq(C, C_1, n2, n3);
+    std::cout << elapsed.count() << std::endl;
   }
 
   MPI_Finalize();
