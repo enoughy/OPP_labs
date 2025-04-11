@@ -1,0 +1,22 @@
+#!/bin/bash
+for ((p1 = 0; p1 <= 16; p1+=2));
+do
+    if (( p1 == 0 )); then
+        (( p1++ ))
+    fi
+
+    min_output=$(mpirun -np $p1 ./lab_4)
+
+        for i in {1..2}
+        do
+            current_output=$(mpirun -np $p1 ./lab_4)
+
+            if [ $(echo "$current_output < $min_output" | awk '{if($1 < $2) print 1; else print 0}') -eq 1 ]; then
+                min_output=$current_output
+            fi
+    done
+    if (( p1 == 1 )); then
+        (( p1-- ))
+    fi
+    echo "$p1:$min_output"
+done
